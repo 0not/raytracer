@@ -13,6 +13,19 @@
 template <unsigned short W, unsigned short H>
 int save_image(kgl::raster_t<W, H>&, const std::string& = "image.ppm");
 
+namespace kgl {
+    class camera {
+    public:
+        pos3 pos;
+        pos3 up;
+        pos3 look;
+
+        camera() : pos(), up(), look() {
+            
+        }
+    };
+
+};
 int main() {
     // Image dimensions
     const int width  = 600,
@@ -27,12 +40,14 @@ int main() {
     kgl::rgb background_color = kgl::black;
 
     // Camera setup
-    kgl::pos3 c_pos{6, 0, 0};               // Position of the camera
-    kgl::pos3 c_up{0, 0, 1.0};              // Up vector
-    kgl::pos3 c_look{0.0, 0.0, 0.0};        // Where the camera is pointing
-    c_look = (c_look - c_pos).normalized(); // Normalized vector in direction of c_look
+    kgl::camera cam;
+    cam.pos.set(6, 0, 0);               // Position of the camera
+    cam.up.set(0, 0, 1.0);              // Up vector
+    cam.look.set(0.0, 0.0, 0.0);        // Where the camera is pointing
+    cam.look = (cam.look - cam.pos).normalized(); // Normalized vector in direction of cam.look
 
-    // Focal distance (c_pos to sensor)
+
+    // Focal distance (cam.pos to sensor)
     // Like in a real camera, increase the number to zoom in 
     // This focal distance is really half the length of a focal distance describing a real camera system
     kgl::space_t focal_dist = 0.04;  // In meters (20mm = 0.02m) 
@@ -65,30 +80,17 @@ int main() {
     kgl::space_t fov = atan(dsensor/(2*focal_dist));    // Half angle field of view (e.g. left to center)
     kgl::space_t fov2 = fov * 2.0;                      // Full angle field of view (e.g. left to right, total field)
 
-    // center of image: (c_pos + focal_dist * c_look)
-    // I think of this as walking from c_pos to c_look for a distance of focal_dist
-    kgl::pos3 i_center = (c_pos + focal_dist * c_look);  
+    // center of image: (cam.pos + focal_dist * cam.look)
+    // I think of this as walking from cam.pos to cam.look for a distance of focal_dist
+    kgl::pos3 i_center = (cam.pos + focal_dist * cam.look);  
 
     // Left vector
-    // If looking at i_center and up is c_up, then left is... left!
+    // If looking at i_center and up is cam.up, then left is... left!
     // Thanks to the magic of cross products, this is easy!
-    kgl::pos3 left =  i_center.cross(c_up).normalized();
+    kgl::pos3 left =  i_center.cross(cam.up).normalized();
 
-    // top left: (||i_center x c_up|| + c_up) * raperature + i_center 
-    kgl::pos3 top_left = (left * wsensor + c_up * hsensor) / 2.0 + i_center - c_pos;
-
-
-    // Print useful info
-    std::cout << "dsensor: " << dsensor << std::endl;
-    std::cout << "wsensor: " << wsensor << std::endl;
-    std::cout << "hsensor: " << hsensor << std::endl;
-    std::cout << "i_center: " << printv(i_center) << std::endl;
-    std::cout << "dist (center): " << (i_center - c_pos).norm() << std::endl;
-    std::cout << "left: " << printv(left) << std::endl;
-    std::cout << "top_left: " << printv(top_left) << std::endl;
-    std::cout << "c->tl: " << printv(top_left - i_center) << std::endl;
-    std::cout << "dist (c->tl): " << (top_left - i_center).norm() << std::endl;
-    std::cout << "fov2: " << fov2 << "; " << fov2 * 180 / (2 * 3.14159) << std::endl;
+    // top left: (||i_center x cam.up|| + cam.up) * raperature + i_center 
+    kgl::pos3 top_left = (left * wsensor + cam.up * hsensor) / 2.0 + i_center - cam.pos;
 
     // Differential of each pixel
     // Size of a pixel along each dimension on the "sensor"
@@ -96,59 +98,81 @@ int main() {
     kgl::space_t dc = wsensor / width;
     kgl::space_t dr = hsensor / height;
 
-    std::cout << "(" << dc << ", " << dr << ")" << std::endl;
-    
     // Make sphere
-    const kgl::space_t radius = 1.0;
+    const kgl::space_t radius  = 1.0;
+    const kgl::space_t radius2 = radius*radius;
     kgl::pos3 center{0.0, 0.0, 0.0};
 
     // light
     kgl::pos3 light{2.0, 0.0, 1};
 
 
-    kgl::pos3 ray;
-    kgl::pos3 L;
+    kgl::pos3 ray;       // Direction of ray
+    kgl::pos3 to_obj;    // From camera position to center of sphere
     for (int r = 0; r < height; r++) {
         for (int c = 0; c < width; c++) {
             // Shoot a ray from the camera
-            ray = (top_left - left * c * dc - c_up * r * dr);
-            ray.normalize();
-            L = (center - c_pos);
-            kgl::space_t tca = ray.dot(L);
+            ray = (top_left - left * c * dc - cam.up * r * dr).normalized();
+            
+            // Check for intersections
+            to_obj = (center - cam.pos);
+
+            // Amount of "to_obj" in direction or "ray"
+            // This is the parameter in the vector equation: ray = ray_orig + ray_dir * tca
+            // It means how for down the ray you have to walk
+            kgl::space_t tca = ray.dot(to_obj);
+
+            // If less than 0, ray is behind us
             if (tca < 0) {
                 raster[r][c] = background_color;
                 continue; // No intersection
             }
-            kgl::space_t d2 = L.dot(L) - tca * tca;
-            //std::cout << "d2: " << d2 << "; r2: " << radius*radius << std::endl;
-            if (d2 > radius * radius) {
+
+            // d^2 + tca^2 = ||to_obj||^2
+            // d2 is the closest approach of the ray to the obj
+            // We don't solve for d because that would mean expensive square root operations that aren't necessary
+            // (since we can just compare to the radius squared)
+            kgl::space_t d2 = to_obj.norm2() - tca * tca;
+
+            // If the ray never gets closer than the radius, we know there is no intersection
+            if (d2 > radius2) {
                 raster[r][c] = background_color;
                 continue; // No intersection
             }
-            kgl::space_t thc = sqrt(radius * radius - d2);
-            kgl::space_t t0 = tca - thc;
-            kgl::space_t t1 = tca + thc;
-            //std::cout << "tca, thc: (" << tca << ", " << thc << ")" << std::endl;
-            //std::cout << "t: (" << t0 << ", " << t1 << ")" << std::endl;
+            
+            // The ray intersects the sphere, going through two points (think entrance and exit wound)
+            // tca is how far from the ray orign to the closest approach of the center.
+            // Add thc to go to the exit, or subtract thc to go to the entrance.
+            kgl::space_t thc = sqrt(radius2 - d2),
+                         t0  = tca - thc,           // Closest intersection
+                         t1  = tca + thc;           // Farthest intersection
+
+            // Just grab the closest one
             kgl::space_t t = t0;
-            if (t1 < t0) 
-                t = t1;
-            //kgl::pos3 normal = (t*ray - center).normalized();
-            kgl::pos3 normal = ((c_pos + t*ray) - center).normalized();
-            //std::cout << "normal: " << printv(normal) << std::endl;
+
+            // This is the surface normal at the intersection point
+            // It is used to calculate the diffuse shading
+            kgl::pos3 normal = ((cam.pos + t*ray) - center).normalized();
+
+            // This is a value that indicates how much of the normal is pointing in the direction of the light
+            // The more that's in the lights direction, the brighter that spot on the sphere.
             kgl::color_t diffuse = (normal.dot(light.normalized()));
+            
+            // We need to "diffuse" to be from 0 to 1, so that it is a valid color value
             if (diffuse < 0)
                 diffuse = 0;
             else if (diffuse > 1)
                 diffuse = 1;
-            //std::cout << "diffuse: " << diffuse << std::endl;
-            kgl::rgb color{diffuse, 0, 0};
-            //std::cout << "color: " << printv(color) << std::endl;
-            raster[r][c] = color;
-                
-        
+            
+            // Set the RGB color
+            kgl::rgb color{1, 0, 0};
 
-            // Check for intersections
+            // Multiply color by the diffuse value to get the correct diffuse shading
+            color *= diffuse;
+
+            // Set the raster value
+            raster[r][c] = color;
+
         }
     }
 
