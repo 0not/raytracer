@@ -150,13 +150,15 @@ int main() {
             // Just grab the closest one
             kgl::space_t t = t0;
 
+            // Point of intersection
+            kgl::pos3 pi = cam.pos + t*ray;
             // This is the surface normal at the intersection point
             // It is used to calculate the diffuse shading
-            kgl::pos3 normal = ((cam.pos + t*ray) - center).normalized();
+            kgl::pos3 normal = (pi - center).normalized();
 
             // This is a value that indicates how much of the normal is pointing in the direction of the light
             // The more that's in the lights direction, the brighter that spot on the sphere.
-            kgl::color_t diffuse = (normal.dot(light.normalized()));
+            kgl::color_t diffuse = (normal.dot((light - pi).normalized()));
             
             // We need to "diffuse" to be from 0 to 1, so that it is a valid color value
             if (diffuse < 0)
